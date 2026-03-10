@@ -8,7 +8,7 @@ Design goals:
 """
 
 import argparse
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 import hashlib
 import hmac
 import json
@@ -142,6 +142,12 @@ MUTATING_ACTIONS = {
     "margin_cancel_order",
 }
 
+ORDER_ACTIONS = {
+    "spot_create_order",
+    "spot_test_order",
+    "margin_create_order",
+}
+
 LIMIT_DEFAULT_ACTIONS = {
     "spot_depth",
     "spot_klines",
@@ -156,6 +162,16 @@ class ChainUpConfig:
     api_key: str
     secret_key: str
     timeout: int = DEFAULT_TIMEOUT
+
+
+@dataclass
+class SymbolRule:
+    symbol: str
+    display_symbol: str
+    price_precision: int
+    quantity_precision: int
+    limit_price_min: Optional[str]
+    limit_volume_min: Optional[str]
 
 
 class ChainUpClient:
@@ -191,7 +207,6 @@ class ChainUpClient:
         method_u = method.upper()
         query = query or {}
 
-        # Remove None values to reduce accidental invalid params.
         query = {k: v for k, v in query.items() if v is not None}
         body = {k: v for k, v in (body or {}).items() if v is not None}
 
@@ -250,6 +265,20 @@ def _is_positive_amount(value: Any) -> bool:
         return False
 
 
+def _decimal_to_plain_string(value: Decimal) -> str:
+    plain = format(value, "f")
+    if "." in plain:
+        plain = plain.rstrip("0").rstrip(".")
+    return plain or "0"
+
+
+def _quantize_down(value: Any, precision: int) -> str:
+    decimal_value = Decimal(str(value))
+    quant = Decimal("1").scaleb(-precision)
+    adjusted = decimal_value.quantize(quant, rounding=ROUND_DOWN)
+    return _decimal_to_plain_string(adjusted)
+
+
 def _post_process_result(action: str, result: Dict[str, Any]) -> Dict[str, Any]:
     if action != "spot_account":
         return result
@@ -273,6 +302,13 @@ def _post_process_result(action: str, result: Dict[str, Any]) -> Dict[str, Any]:
 
 def _normalize_symbol_token(value: str) -> str:
     return value.strip().replace("/", "").replace("-", "").replace("_", "").lower()
+
+
+def _display_symbol_for_humans(value: str) -> str:
+    token = value.strip().upper().replace("-", "/").replace("_", "/")
+    if "/" in token:
+        return token
+    return token
 
 
 def _normalize_symbol_fields(data: Any) -> Any:
@@ -361,6 +397,85 @@ def _load_tools_config(path: str = DEFAULT_TOOLS_FILE) -> Dict[str, str]:
     return config
 
 
+def _load_symbol_rule(client: ChainUpClient, symbol: str) -> SymbolRule:
+    normalized_symbol = _normalize_symbol_token(symbol)
+    result = client.request("GET", "/sapi/v2/symbols", signed=False, query={}, body={})
+    symbols = result.get("symbols")
+    if not isinstance(symbols, list):
+        raise ValueError("failed to load symbol metadata from spot_symbols")
+
+    for item in symbols:
+        if not isinstance(item, dict):
+            continue
+        item_symbol = item.get("symbol")
+        if not isinstance(item_symbol, str):
+            continue
+        if _normalize_symbol_token(item_symbol) != normalized_symbol:
+            continue
+        return SymbolRule(
+            symbol=item_symbol,
+            display_symbol=item.get("SymbolName") or _display_symbol_for_humans(symbol),
+            price_precision=int(item.get("pricePrecision", 0)),
+            quantity_precision=int(item.get("quantityPrecision", 0)),
+            limit_price_min=item.get("limitPriceMin"),
+            limit_volume_min=item.get("limitVolumeMin"),
+        )
+
+    raise ValueError(f"symbol not found in spot_symbols: {symbol}")
+
+
+def _prepare_order_body(action: str, body: Dict[str, Any], rule: SymbolRule) -> Dict[str, Any]:
+    prepared = dict(body)
+    adjustments: List[Dict[str, Any]] = []
+
+    if action not in ORDER_ACTIONS:
+        return {
+            "preparedBody": prepared,
+            "adjustments": adjustments,
+            "symbolRule": {},
+        }
+
+    prepared["symbol"] = rule.display_symbol
+
+    for field_name, precision in (("price", rule.price_precision), ("volume", rule.quantity_precision)):
+        if field_name not in prepared:
+            continue
+        original = prepared[field_name]
+        adjusted = _quantize_down(original, precision)
+        if str(original) != adjusted:
+            adjustments.append(
+                {
+                    "field": field_name,
+                    "original": original,
+                    "adjusted": adjusted,
+                    "precision": precision,
+                }
+            )
+        prepared[field_name] = adjusted
+
+    if "volume" in prepared and _is_positive_amount(body.get("volume")) and not _is_positive_amount(prepared["volume"]):
+        raise ValueError(
+            f"volume becomes 0 after applying quantityPrecision={rule.quantity_precision}; increase order size"
+        )
+    if "price" in prepared and _is_positive_amount(body.get("price")) and not _is_positive_amount(prepared["price"]):
+        raise ValueError(
+            f"price becomes 0 after applying pricePrecision={rule.price_precision}; increase order price"
+        )
+
+    return {
+        "preparedBody": prepared,
+        "adjustments": adjustments,
+        "symbolRule": {
+            "symbol": rule.symbol,
+            "displaySymbol": rule.display_symbol,
+            "pricePrecision": rule.price_precision,
+            "quantityPrecision": rule.quantity_precision,
+            "limitPriceMin": rule.limit_price_min,
+            "limitVolumeMin": rule.limit_volume_min,
+        },
+    }
+
+
 def _build_config(args: argparse.Namespace) -> ChainUpConfig:
     tools_cfg = _load_tools_config()
 
@@ -383,7 +498,6 @@ def _build_config(args: argparse.Namespace) -> ChainUpConfig:
     if not base_url:
         raise ValueError("missing base_url: use --base-url or CHAINUP_BASE_URL")
 
-    # unsigned public endpoints can run without credentials.
     if args.signed_required:
         if not api_key:
             raise ValueError("missing api_key: use --api-key or CHAINUP_API_KEY")
@@ -429,11 +543,16 @@ def main() -> int:
         action="store_true",
         help="Show placeholder required fields for this action",
     )
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="For order actions, fetch symbol precision and return prepared params without sending the order",
+    )
 
     args = parser.parse_args()
 
     method, path, signed, params_location = ACTIONS[args.action]
-    args.signed_required = signed
+    args.signed_required = signed and (not args.prepare_only)
     args.require_confirm = (args.action in MUTATING_ACTIONS) and (not args.no_confirm_gate)
 
     try:
@@ -441,7 +560,6 @@ def main() -> int:
         body = _load_json_arg(args.body_json, "--body-json")
         query, body = _normalize_action_inputs(query, body)
         query, body = _apply_action_defaults(args.action, query, body)
-        _assert_confirm(args)
         cfg = _build_config(args)
     except ValueError as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
@@ -460,6 +578,42 @@ def main() -> int:
         )
 
     client = ChainUpClient(cfg)
+
+    if args.action in ORDER_ACTIONS:
+        try:
+            symbol_value = body.get("symbol")
+            if not isinstance(symbol_value, str) or not symbol_value.strip():
+                raise ValueError("order action requires symbol in --body-json")
+            original_body = dict(body)
+            prepared = _prepare_order_body(
+                args.action,
+                body,
+                _load_symbol_rule(client, symbol_value),
+            )
+            body = prepared["preparedBody"]
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+            return 2
+
+        if args.prepare_only:
+            print(
+                json.dumps(
+                    {
+                        "action": args.action,
+                        "originalBody": original_body,
+                        **prepared,
+                        "readyForConfirm": True,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+
+    try:
+        _assert_confirm(args)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        return 2
 
     req_query: Dict[str, Any] = query if params_location == "query" else {}
     req_body: Dict[str, Any] = body if params_location == "body" else {}

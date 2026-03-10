@@ -25,6 +25,7 @@ description: ChainUp/OpenAPI V2 现货（币币）与杠杆交易技能。优先
 - 内置公共头：`Content-Type`、`admin-language`、`User-Agent`
 - 统一 action -> endpoint 映射
 - 真实资产变动默认要求 `--confirm CONFIRM`
+- 下单类 action 支持 `--prepare-only`：先通过 `spot_symbols` 拉取币对精度并预处理 `price` / `volume`
 - 支持 `--show-todo` 查看当前 action 的待完善必填项占位
 
 ## Execution Rules
@@ -34,6 +35,8 @@ description: ChainUp/OpenAPI V2 现货（币币）与杠杆交易技能。优先
 - 所有会影响余额、持仓、挂单或成交状态的 action，在实际执行前必须先用自然语言给出执行摘要，并等待用户手动回复精确的 `Confirm` 后再调用脚本。
 - 非资金变动查询尽量不加额外确认，直接执行。
 - 不要把“用户表达了想下单/撤单/划转”视为可直接执行；没有收到单独一条 `Confirm` 前，一律不得发起真实请求。
+- 对 `spot_create_order`、`spot_test_order`、`margin_create_order`，在要求用户确认前，先调用脚本的 `--prepare-only` 预检查币对精度；脚本会通过 `spot_symbols` 获取币对信息并按 `pricePrecision` / `quantityPrecision` 向下截断参数。
+- 向用户展示待确认参数时，必须使用 `--prepare-only` 返回的 `preparedBody`，不要继续展示未经精度处理的原始下单参数。
 - 收到用户单独回复的 `Confirm` 后，再执行真实资金变动动作，并沿用脚本参数 `--confirm CONFIRM`。
 - 若 `spot_create_order` 成功，默认继续调用 `spot_get_order` 查询订单详情。
 - 所有 HTTP 调用都必须从 `scripts/chainup_api.py` 发出。
@@ -79,6 +82,7 @@ python /root/.codex/skills/chainup-spot/scripts/chainup_api.py <action> \
 说明：
 - `GET` 类型 action 使用 `--query-json`
 - `POST` 类型 action 使用 `--body-json`
+- 下单类 action 可先加 `--prepare-only`，返回精度修正后的 `preparedBody` 供确认使用
 - 对有资金/订单变动的 action，只有在用户单独回复 `Confirm` 之后，才可追加：`--confirm CONFIRM`
 - 除非用户要求解释，否则优先执行再返回结果，避免先给大段说明。
 
@@ -118,6 +122,7 @@ Margin Signed:
 ## Response Rules
 
 - 默认返回原始 JSON（脚本 stdout）。
+- `--prepare-only` 返回 `originalBody`、`preparedBody`、`adjustments`、`symbolRule`，用于在确认前展示精度修正后的实际下单参数。
 - `spot_create_order` 成功后，默认立刻补调一次 `spot_get_order`，返回最新订单详情。
 - 补查订单时，优先使用下单响应里的 `symbol + orderId`；若网关返回 `orderIdString` 也一并保留。
 - `spot_account` 会在 Python 脚本内直接过滤，只返回 `free > 0` 或 `locked > 0` 的资产。
@@ -129,6 +134,7 @@ Margin Signed:
 - 所有真实资产变动动作（下单、撤单、划转）默认必须先等待用户手动回复 `Confirm`，随后才允许用 `--confirm CONFIRM` 执行。
 - 影响余额但不一定立即成交的动作也按真实资产变动处理，包括但不限于限价挂单、批量下单、撤单、划转、杠杆下单与撤单。
 - 查询类动作可直接执行，包括但不限于余额查询、订单查询、成交查询、行情查询、挂单查询。
+- 下单确认前必须先完成精度预检查，避免把超出币对精度的价格或数量直接拿去请求真实接口。
 - 如用户明确要求跳过确认，可使用 `--no-confirm-gate`（高风险，仅在用户明确授权时使用）。
 - 任何时候都不要在控制台或回复中输出完整凭证；如果脚本异常导致潜在泄漏风险，优先概述错误，不直接转抄原始敏感内容。
 
@@ -140,6 +146,13 @@ python /root/.codex/skills/chainup-spot/scripts/chainup_api.py spot_account --qu
 ```
 
 现货市价下单（真实请求，需要确认）：
+```bash
+python /root/.codex/skills/chainup-spot/scripts/chainup_api.py spot_create_order \
+  --body-json '{"symbol":"BTC/USDT","volume":"100.123456","side":"BUY","type":"MARKET"}' \
+  --prepare-only
+```
+
+确认后再执行真实请求：
 ```bash
 python /root/.codex/skills/chainup-spot/scripts/chainup_api.py spot_create_order \
   --body-json '{"symbol":"BTC/USDT","volume":"100","side":"BUY","type":"MARKET"}' \
