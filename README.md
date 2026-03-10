@@ -1,5 +1,7 @@
 # skills-hub
 
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
 `skills-hub` is a centralized repository for Codex Skills. It currently includes the `chainup-spot` skill for ChainUp/OpenAPI V2 spot and margin trading workflows, with a script-first runtime that sends all HTTP requests through a single Python entrypoint.
 
 ## Purpose
