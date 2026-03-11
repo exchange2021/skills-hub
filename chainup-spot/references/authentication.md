@@ -1,6 +1,6 @@
 # ChainUp OpenAPI V2 Authentication
 
-本参考基于官方文档与 FAQ：
+This reference is based on the official documentation and FAQ:
 - https://exchangedocsv2.gitbook.io/open-api-doc-v2/jian-ti-zhong-wen-v2/bi-bi-jiao-yi
 - https://exchangedocsv2.gitbook.io/open-api-doc-v2/jian-ti-zhong-wen-v2/chang-jian-wen-ti
 
@@ -15,31 +15,31 @@
 
 ## Signature Payload
 
-官方 FAQ 基础格式：
+Base format from the official FAQ:
 
 `payload = timestamp + METHOD + requestPath + body`
 
-按当前接入规则（与 Postman 预请求脚本一致）：
+Per the current integration rule set, matching the Postman pre-request script:
 
-- `requestPath`：从完整 URL 中去掉 `baseUrl` 后的路径（可包含 `?query`），不能包含域名
-- `timestamp`：毫秒时间戳字符串
-- `METHOD`：大写 HTTP 方法
-- `GET`：`payload = timestamp + "GET" + requestPath`（不拼 body，不拼 `"{}"`）
-- `POST/PUT/PATCH`：`payload = timestamp + METHOD + requestPath + bodyStr`
-- `bodyStr`（仅用于有请求体的方法）：
-- 若原始 body 存在且去空白后不等于 `{}`，使用原始 body 字符串
-- 否则固定使用 `"{}"`
+- `requestPath`: the path after removing `baseUrl` from the full URL; it may include `?query` and must not include the domain
+- `timestamp`: millisecond timestamp string
+- `METHOD`: uppercase HTTP method
+- `GET`: `payload = timestamp + "GET" + requestPath` (do not append a body and do not append `"{}"`)
+- `POST/PUT/PATCH`: `payload = timestamp + METHOD + requestPath + bodyStr`
+- `bodyStr` (only for methods with a request body):
+- If the original body exists and, after trimming whitespace, is not equal to `{}`, use the original body string
+- Otherwise always use `"{}"`
 
-通用要求：
-- `POST` 的 JSON 字符串必须与实际发送体完全一致（字段名、顺序、空格）
-- 若接口要求 query 参与签名，需将 query 放在 `requestPath` 中（例如 `/sapi/v2/order?orderId=...&symbol=...`）
-- `X-CH-SIGN`：`HMAC_SHA256(payload, secretKey)` 后转 HEX（小写）
+General requirements:
+- The JSON string used in a `POST` signature must match the actual request body exactly, including field names, order, and spaces
+- If the endpoint requires query parameters to be signed, include the query string inside `requestPath` (for example `/sapi/v2/order?orderId=...&symbol=...`)
+- `X-CH-SIGN` is `HMAC_SHA256(payload, secretKey)` encoded as lowercase hex
 
-FAQ 示例：
+FAQ examples:
 - `GET`: `1588591856950GET/sapi/v1/account`
 - `POST`: `1588591856950POST/sapi/v1/order/test{"symbol":"BTCUSDT","price":"9300","volume":"1","side":"BUY","type":"LIMIT"}`
 
-Postman 等价伪代码：
+Postman-equivalent pseudocode:
 
 ```javascript
 time = Date.now().toString()
@@ -57,7 +57,7 @@ headers: X-CH-SIGN, X-CH-APIKEY, X-CH-TS, admin-language
 
 ## HMAC SHA256 + HEX
 
-对 `openapi.coobit.cc`，当前可用签名编码为十六进制（HEX）：
+For `openapi.coobit.cc`, the currently working signature encoding is hexadecimal (HEX):
 
 ```bash
 SIGN=$(printf '%s' "$PAYLOAD" \
@@ -126,13 +126,13 @@ curl -sS "${BASE_URL}${PATH}?${QUERY}" \
 
 ## Notes
 
-- 服务器默认 5000ms 时间窗口，可通过业务参数 `recvwindow` 自定义。
-- 若报时间戳无效，先校验本机时钟，再重试。
-- 若签名校验失败，重点检查：
-- 拼接顺序是否严格一致
-- `requestPath` 是否包含域名（不应包含）
-- `GET` 是否误拼了 body / `"{}"`（`GET` 应仅签 `timestamp + GET + requestPath`）
-- 非 `GET` 空 body 是否按 `"{}"` 参与签名
-- `GET` 是否应把 `?query` 并入签名路径
-- `POST` 的签名体是否与实际发送 JSON 完全一致
-- 输出编码是否为接口实际要求（HEX 或 Base64）
+- The server default receive window is 5000ms. It can be customized with the business parameter `recvwindow`.
+- If the server reports an invalid timestamp, verify the local system clock first and then retry.
+- If signature verification fails, check these points first:
+- Whether the concatenation order is exact
+- Whether `requestPath` incorrectly includes the domain (it should not)
+- Whether `GET` incorrectly appended a body or `"{}"` (`GET` should sign only `timestamp + GET + requestPath`)
+- Whether an empty non-`GET` body was signed as `"{}"`
+- Whether `GET` should include `?query` inside the signed path
+- Whether the signed `POST` body matches the actual JSON sent exactly
+- Whether the output encoding matches what the gateway expects (HEX or Base64)

@@ -1,74 +1,74 @@
 ---
 name: chainup-spot
-description: ChainUp/OpenAPI V2 现货（币币）与杠杆交易技能。优先通过 Python 脚本统一调用 `sapi` 接口，减少自然语言推理开销。
+description: ChainUp/OpenAPI V2 spot and margin trading skill. Prefer using the Python script to call `sapi` endpoints through one unified entrypoint and avoid ad hoc signing logic.
 ---
 
 # ChainUp Spot (Script-First)
 
 ## Why This Skill
 
-当用户提到 OpenAPI V2、币币交易、杠杆交易、`X-CH-SIGN`、`/sapi/v2/order`、`/sapi/v1/margin/*`、`/sapi/v1/account` 等场景时，直接使用本技能。
+Use this skill immediately when the user mentions OpenAPI V2, spot trading, margin trading, `X-CH-SIGN`, `/sapi/v2/order`, `/sapi/v1/margin/*`, `/sapi/v1/account`, or similar ChainUp trading/account scenarios.
 
-目标：
-- 优先调用脚本，不再每次临时拼接签名逻辑。
-- 默认返回交易所原始 JSON。
-- 不确定参数先走占位（TODO），后续由你补齐。
-- 命中技能后尽快直接发起脚本调用，减少解释性输出、额外推理和重复确认。
+Goals:
+- Prefer the script entrypoint instead of rebuilding signing logic each time.
+- Return raw exchange JSON by default.
+- If some parameters are still unknown, keep placeholders (`TODO`) first and let the user fill them in later.
+- After the skill triggers, move to the script call quickly and avoid unnecessary explanation, extra reasoning, or repeated confirmation.
 
 ## Runtime Entry
 
-统一入口脚本：
+Unified entry script:
 - `scripts/chainup_api.py`
 
-核心能力：
-- 内置签名：`X-CH-APIKEY`、`X-CH-SIGN`、`X-CH-TS`
-- 内置公共头：`Content-Type`、`admin-language`、`User-Agent`
-- 统一 action -> endpoint 映射
-- 真实资产变动默认要求 `--confirm CONFIRM`
-- 下单类 action 支持 `--prepare-only`：先通过 `spot_symbols` 拉取币对精度并预处理 `price` / `volume`
-- 支持 `--show-todo` 查看当前 action 的待完善必填项占位
+Core capabilities:
+- Built-in signing: `X-CH-APIKEY`, `X-CH-SIGN`, `X-CH-TS`
+- Built-in common headers: `Content-Type`, `admin-language`, `User-Agent`
+- Unified `action -> endpoint` mapping
+- Real balance-changing actions require `--confirm CONFIRM` by default
+- Order actions support `--prepare-only`: fetch symbol rules via `spot_symbols` first, then preprocess `price` / `volume`
+- Supports `--show-todo` to display unresolved required placeholders for the current action
 
 ## Execution Rules
 
-- 命中本技能时，优先直接调用 `scripts/chainup_api.py`，不要先用自然语言重复规划接口参数。
-- 查询类 action（不影响余额/订单状态）在参数明确时直接调用脚本；只在参数缺失且无法安全推断时才追问。
-- 所有会影响余额、持仓、挂单或成交状态的 action，在实际执行前必须先用自然语言给出执行摘要，并等待用户手动回复精确的 `Confirm` 后再调用脚本。
-- 非资金变动查询尽量不加额外确认，直接执行。
-- 不要把“用户表达了想下单/撤单/划转”视为可直接执行；没有收到单独一条 `Confirm` 前，一律不得发起真实请求。
-- 对 `spot_create_order`、`spot_test_order`、`margin_create_order`，在要求用户确认前，先调用脚本的 `--prepare-only` 预检查币对精度；脚本会通过 `spot_symbols` 获取币对信息并按 `pricePrecision` / `quantityPrecision` 向下截断参数。
-- 向用户展示待确认参数时，必须使用 `--prepare-only` 返回的 `preparedBody`，不要继续展示未经精度处理的原始下单参数。
-- 收到用户单独回复的 `Confirm` 后，再执行真实资金变动动作，并沿用脚本参数 `--confirm CONFIRM`。
-- 若 `spot_create_order` 成功，默认继续调用 `spot_get_order` 查询订单详情。
-- 所有 HTTP 调用都必须从 `scripts/chainup_api.py` 发出。
-- 如果脚本调用失败，只返回脚本失败结果并继续基于 Python 脚本排查；不要改用 `curl`、手写签名请求或其他临时 HTTP 方案。
-- 不要为了“验证接口”额外引入第二套实现，避免增加推理和分叉逻辑。
+- When this skill is triggered, call `scripts/chainup_api.py` first. Do not restate API parameter planning in natural language before using the script.
+- For read-only actions that do not affect balances or order state, call the script directly once parameters are clear. Only ask follow-up questions when required parameters are missing and cannot be inferred safely.
+- For any action that can change balances, positions, open orders, or fills, provide a short execution summary in natural language before the live request, then wait for the user to reply with an exact standalone `Confirm` before calling the script.
+- For non-fund-changing queries, avoid extra confirmation and execute directly.
+- Do not treat "the user wants to place/cancel/transfer" as execution permission. No live request is allowed until a separate user message contains `Confirm`.
+- For `spot_create_order`, `spot_test_order`, and `margin_create_order`, run the script with `--prepare-only` before asking for confirmation. The script will call `spot_symbols`, fetch symbol precision, and round down using `pricePrecision` / `quantityPrecision`.
+- When showing parameters that need confirmation, always use the `preparedBody` from `--prepare-only`. Do not show the unadjusted raw order payload.
+- After the user sends a standalone `Confirm`, execute the live balance-changing action and keep using `--confirm CONFIRM`.
+- If `spot_create_order` succeeds, follow up with `spot_get_order` by default.
+- All HTTP requests must be sent through `scripts/chainup_api.py`.
+- If the script call fails, return the script failure result and continue debugging through the Python script only. Do not switch to `curl`, handwritten signing, or any backup HTTP implementation.
+- Do not add a second implementation "just to verify the API". Avoid branching logic and duplicated reasoning.
 
 ## Required Config
 
-优先使用 `/root/TOOLS.md`：
+Prefer `/root/TOOLS.md` first:
 - `BASE_URL: ...`
 - `API_KEY: ...`
 - `SECRET_KEY: ...`
 
-其次才使用环境变量：
+Use environment variables only as the next fallback:
 - `CHAINUP_BASE_URL`
 - `CHAINUP_API_KEY`
 - `CHAINUP_SECRET_KEY`
 
-也可命令行传入：
+CLI arguments are also supported:
 - `--base-url`
 - `--api-key`
 - `--secret-key`
 
-配置读取优先级：
-- `命令行参数` > `/root/TOOLS.md` > `环境变量`
-- 如 `/root/TOOLS.md` 中已有可用配置，优先直接使用，不要求用户先设置环境变量。
+Config resolution priority:
+- `CLI arguments` > `/root/TOOLS.md` > `environment variables`
+- If `/root/TOOLS.md` already contains usable credentials, use them directly and do not require the user to set environment variables first.
 
-敏感信息处理：
-- `CHAINUP_API_KEY` 与 `CHAINUP_SECRET_KEY` 都属于敏感信息，禁止在控制台、自然语言回复、执行摘要、报错转述、示例命令中完整显示。
-- 如必须引用，只允许脱敏展示：保留前 4 位和后 4 位，中间使用 `***`，例如 `915c***815e`。
-- 优先避免在可见命令中直接内联密钥；如必须执行命令，回复里不要重复整条带密钥的命令。
-- 用户主动提供完整密钥后，也不得在后续任何消息中原样回显。
+Sensitive data handling:
+- `CHAINUP_API_KEY` and `CHAINUP_SECRET_KEY` are sensitive. Never print them in full in the terminal, natural-language responses, execution summaries, error relays, or example commands.
+- If they must be referenced, only show masked values: keep the first 4 and last 4 characters and replace the middle with `***`, for example `915c***815e`.
+- Avoid inlining secrets in visible commands whenever possible. If a command must include them, do not repeat that full secret-bearing command in the response.
+- Even if the user provides the full secret explicitly, never echo it back verbatim later.
 
 ## Call Template
 
@@ -79,12 +79,12 @@ python /root/.codex/skills/chainup-spot/scripts/chainup_api.py <action> \
   --show-todo
 ```
 
-说明：
-- `GET` 类型 action 使用 `--query-json`
-- `POST` 类型 action 使用 `--body-json`
-- 下单类 action 可先加 `--prepare-only`，返回精度修正后的 `preparedBody` 供确认使用
-- 对有资金/订单变动的 action，只有在用户单独回复 `Confirm` 之后，才可追加：`--confirm CONFIRM`
-- 除非用户要求解释，否则优先执行再返回结果，避免先给大段说明。
+Notes:
+- Use `--query-json` for `GET` actions
+- Use `--body-json` for `POST` actions
+- For order actions, `--prepare-only` can be used first to return precision-adjusted `preparedBody` for confirmation
+- For actions that change balances or orders, append `--confirm CONFIRM` only after the user sends a standalone `Confirm`
+- Unless the user asks for explanation, prefer executing first and returning the result instead of giving a long preface
 
 ## Action Map
 
@@ -121,53 +121,53 @@ Margin Signed:
 
 ## Response Rules
 
-- 默认返回原始 JSON（脚本 stdout）。
-- `--prepare-only` 返回 `originalBody`、`preparedBody`、`adjustments`、`symbolRule`，用于在确认前展示精度修正后的实际下单参数。
-- `spot_create_order` 成功后，默认立刻补调一次 `spot_get_order`，返回最新订单详情。
-- 补查订单时，优先使用下单响应里的 `symbol + orderId`；若网关返回 `orderIdString` 也一并保留。
-- `spot_account` 会在 Python 脚本内直接过滤，只返回 `free > 0` 或 `locked > 0` 的资产。
-- 用户要求“只看重点”时再附加简短摘要。
-- 若返回内容、错误信息或调试信息中包含完整 `api-key`、`secret-key` 或其他凭证，先脱敏再输出。
+- Return raw JSON by default (script stdout).
+- `--prepare-only` returns `originalBody`, `preparedBody`, `adjustments`, and `symbolRule` so the user can review the precision-adjusted live order payload before confirmation.
+- After a successful `spot_create_order`, immediately follow with `spot_get_order` by default and return the latest order details.
+- When fetching the follow-up order, prefer `symbol + orderId` from the create-order response. If the gateway also returns `orderIdString`, preserve it as well.
+- `spot_account` is filtered directly in the Python script and returns only assets where `free > 0` or `locked > 0`.
+- Add a short summary only when the user asks to "show just the key points".
+- If returned content, errors, or debug output contains full `api-key`, `secret-key`, or other credentials, mask them before showing anything.
 
 ## Safety Rules
 
-- 所有真实资产变动动作（下单、撤单、划转）默认必须先等待用户手动回复 `Confirm`，随后才允许用 `--confirm CONFIRM` 执行。
-- 影响余额但不一定立即成交的动作也按真实资产变动处理，包括但不限于限价挂单、批量下单、撤单、划转、杠杆下单与撤单。
-- 查询类动作可直接执行，包括但不限于余额查询、订单查询、成交查询、行情查询、挂单查询。
-- 下单确认前必须先完成精度预检查，避免把超出币对精度的价格或数量直接拿去请求真实接口。
-- 如用户明确要求跳过确认，可使用 `--no-confirm-gate`（高风险，仅在用户明确授权时使用）。
-- 任何时候都不要在控制台或回复中输出完整凭证；如果脚本异常导致潜在泄漏风险，优先概述错误，不直接转抄原始敏感内容。
+- All live balance-changing actions (place order, cancel order, transfer) require the user to send `Confirm` manually before execution, then use `--confirm CONFIRM`.
+- Any action that affects balances, even if it may not fill immediately, is still treated as a live balance-changing action. This includes but is not limited to limit orders, batch orders, cancellations, transfers, margin orders, and margin cancellations.
+- Query actions can execute directly, including but not limited to balance queries, order queries, trade history queries, market data queries, and open-order queries.
+- Precision prechecks are mandatory before order confirmation so the script does not send prices or quantities that exceed symbol precision to the live gateway.
+- If the user explicitly requests to bypass confirmation, `--no-confirm-gate` may be used. This is high risk and should only be used with explicit user authorization.
+- Never print full credentials in the terminal or reply. If the script throws an error that could expose secrets, summarize the failure rather than copying the raw sensitive output.
 
 ## Examples
 
-查询现货资产：
+Query spot balances:
 ```bash
 python /root/.codex/skills/chainup-spot/scripts/chainup_api.py spot_account --query-json '{}'
 ```
 
-现货市价下单（真实请求，需要确认）：
+Spot market order preparation (live request requires confirmation):
 ```bash
 python /root/.codex/skills/chainup-spot/scripts/chainup_api.py spot_create_order \
   --body-json '{"symbol":"BTC/USDT","volume":"100.123456","side":"BUY","type":"MARKET"}' \
   --prepare-only
 ```
 
-确认后再执行真实请求：
+Execute the live request after confirmation:
 ```bash
 python /root/.codex/skills/chainup-spot/scripts/chainup_api.py spot_create_order \
   --body-json '{"symbol":"BTC/USDT","volume":"100","side":"BUY","type":"MARKET"}' \
   --confirm CONFIRM --show-todo
 ```
 
-现货下单补充约定：
-- `type=MARKET` 且 `side=BUY` 时，`volume` 按计价币传值。
-- 例如 `ETH/USDT` 传 `volume=1` 且 `side=BUY`，表示用 `1 USDT` 市价买入 ETH。
-- `type=MARKET` 且 `side=SELL` 时，`volume` 按基础币数量传值。
-- 例如 `ETH/USDT` 传 `volume=0.1` 且 `side=SELL`，表示市价卖出 `0.1 ETH`。
-- `type` 为非市价单时，`volume` 仍按基础币数量理解。
-- `spot_create_order` 返回成功后，下一步默认不是停在下单回执，而是继续调用 `spot_get_order` 查询最终订单信息。
+Additional spot order conventions:
+- When `type=MARKET` and `side=BUY`, `volume` is interpreted in the quote asset.
+- For example, for `ETH/USDT`, `volume=1` with `side=BUY` means buying ETH with `1 USDT` at market.
+- When `type=MARKET` and `side=SELL`, `volume` is interpreted in the base asset amount.
+- For example, for `ETH/USDT`, `volume=0.1` with `side=SELL` means selling `0.1 ETH` at market.
+- For non-market order types such as `LIMIT`, `volume` is still interpreted as the base asset amount.
+- After `spot_create_order` succeeds, the default next step is not just returning the order receipt. The script should continue with `spot_get_order` and return the latest order information.
 
-杠杆限价下单：
+Margin limit order:
 ```bash
 python /root/.codex/skills/chainup-spot/scripts/chainup_api.py margin_create_order \
   --body-json '{"symbol":"BTC/USDT","volume":"0.001","side":"BUY","type":"LIMIT","price":"30000"}' \
@@ -176,6 +176,6 @@ python /root/.codex/skills/chainup-spot/scripts/chainup_api.py margin_create_ord
 
 ## References
 
-- 鉴权与签名：[`references/authentication.md`](./references/authentication.md)
-- 现货接口：[`references/spot-endpoints.md`](./references/spot-endpoints.md)
-- 杠杆接口：[`references/margin-endpoints.md`](./references/margin-endpoints.md)
+- Authentication and signing: [`references/authentication.md`](./references/authentication.md)
+- Spot endpoints: [`references/spot-endpoints.md`](./references/spot-endpoints.md)
+- Margin endpoints: [`references/margin-endpoints.md`](./references/margin-endpoints.md)

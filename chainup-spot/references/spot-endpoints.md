@@ -1,67 +1,67 @@
 # ChainUp Spot Endpoints (OpenAPI V2)
 
-来源：
+Source:
 - https://exchangedocsv2.gitbook.io/open-api-doc-v2/jian-ti-zhong-wen-v2/bi-bi-jiao-yi
 
-说明：
-- 以下为现货（币币）常用接口，路径与鉴权规则以线上网关实际行为为准。
-- 文档示例域名为占位：`https://openapi.xxx.xx`
+Notes:
+- The following are common spot endpoints. Treat the live gateway behavior as the final authority for paths and authentication rules.
+- The example domain in the documentation is a placeholder: `https://openapi.xxx.xx`
 
 ## Public
 
-- `GET /sapi/v2/ping` 测试连通性
-- `GET /sapi/v2/time` 服务器时间
-- `GET /sapi/v2/symbols` 币对和精度/最小值信息
-- `GET /sapi/v2/depth` 订单簿
-- `GET /sapi/v2/ticker` 24h 行情
-- `GET /sapi/v2/trades` 最近成交
-- `GET /sapi/v2/klines` K 线
+- `GET /sapi/v2/ping` connectivity test
+- `GET /sapi/v2/time` server time
+- `GET /sapi/v2/symbols` symbols plus precision/minimum-order constraints
+- `GET /sapi/v2/depth` order book
+- `GET /sapi/v2/ticker` 24h ticker
+- `GET /sapi/v2/trades` recent trades
+- `GET /sapi/v2/klines` candlesticks
 
 ## Trade (Signed)
 
-- `POST /sapi/v2/order` 创建订单
-- `POST /sapi/v2/order/test` 测试下单
-- `POST /sapi/v2/batchOrders` 批量下单（最多 10）
-- `GET /sapi/v2/order` 查询订单
-- `POST /sapi/v2/cancel` 撤单
-- `POST /sapi/v2/batchCancel` 批量撤单（最多 10）
-- `GET /sapi/v2/openOrders` 当前委托
-- `GET /sapi/v2/myTrades` 交易记录
+- `POST /sapi/v2/order` create order
+- `POST /sapi/v2/order/test` test order
+- `POST /sapi/v2/batchOrders` batch create orders (max 10)
+- `GET /sapi/v2/order` query order
+- `POST /sapi/v2/cancel` cancel order
+- `POST /sapi/v2/batchCancel` batch cancel orders (max 10)
+- `GET /sapi/v2/openOrders` open orders
+- `GET /sapi/v2/myTrades` trade history
 
 ## Account (Signed)
 
-- `GET /sapi/v1/account` 现货账户资产
-- 实务输出建议：先从 `balances` 中筛出非零资产（`free != 0` 或 `locked != 0`）作为默认结果；需要对账时再返回全量 `balances`
-- `POST /sapi/v1/asset/transfer` 账户划转
-- `POST /sapi/v1/asset/transferQuery` 划转记录
+- `GET /sapi/v1/account` spot account balances
+- Recommended practical output: filter `balances` to non-zero assets (`free != 0` or `locked != 0`) by default, and return full `balances` only when the user needs reconciliation
+- `POST /sapi/v1/asset/transfer` account transfer
+- `POST /sapi/v1/asset/transferQuery` transfer history
 
 ## Order Fields
 
-`POST /sapi/v2/order` 常用字段：
-- `symbol` 例如 `BTC/USDT`（部分实现支持 `BTCUSDT`）
-- `volume` 订单数量；`MARKET` 单的语义需要结合买卖方向判断
+Common fields for `POST /sapi/v2/order`:
+- `symbol` for example `BTC/USDT` (some implementations also support `BTCUSDT`)
+- `volume` order quantity; the meaning for `MARKET` orders depends on side
 - `side` `BUY` / `SELL`
 - `type` `LIMIT` / `MARKET` / `FOK` / `POST_ONLY` / `IOC` / `STOP`
-- `price`（`LIMIT` 必填）
-- `triggerPrice`（`STOP` 相关）
-- `recvwindow` 可选
-- `newClientOrderId` 可选
+- `price` required for `LIMIT`
+- `triggerPrice` for `STOP`-related orders
+- `recvwindow` optional
+- `newClientOrderId` optional
 
-实测补充：
-- 在当前 Coobit 网关上，`type=MARKET` 且 `side=BUY` 时，`volume` 表示 quote 数量。
-- 例如 `ETH/USDT` 传 `volume=1` 且 `side=BUY`，表示按市价使用 `1 USDT` 买入。
-- 在当前 Coobit 网关上，`type=MARKET` 且 `side=SELL` 时，`volume` 表示 base 数量。
-- 例如 `ETH/USDT` 传 `volume=0.1` 且 `side=SELL`，表示按市价卖出 `0.1 ETH`。
-- `type` 为 `LIMIT` 等非市价单时，`volume` 仍按基础币数量理解。
+Observed behavior:
+- On the current Coobit gateway, when `type=MARKET` and `side=BUY`, `volume` means quote quantity.
+- For example, for `ETH/USDT`, `volume=1` with `side=BUY` means buying ETH at market using `1 USDT`.
+- On the current Coobit gateway, when `type=MARKET` and `side=SELL`, `volume` means base quantity.
+- For example, for `ETH/USDT`, `volume=0.1` with `side=SELL` means selling `0.1 ETH` at market.
+- For non-market orders such as `LIMIT`, `volume` is still interpreted as the base asset quantity.
 
 ## Practical Checklist
 
-发交易请求前先做：
-- 从 `/sapi/v2/symbols` 获取该交易对 `pricePrecision`、`quantityPrecision`、最小下单约束。
-- 按精度截断 `price` 与 `volume`。
-- 主网真实交易先让用户回复 `CONFIRM`。
+Before sending a trading request:
+- Fetch `pricePrecision`, `quantityPrecision`, and minimum-order constraints from `/sapi/v2/symbols`.
+- Truncate `price` and `volume` to the allowed precision.
+- For live mainnet trading, require the user to reply with `CONFIRM` first.
 
-发单成功后默认跟进：
-- `POST /sapi/v2/order` 成功返回后，立即调用 `GET /sapi/v2/order`。
-- 查询参数优先使用下单回执中的 `symbol` 与 `orderId`。
-- 对用户默认返回订单详情，而不只停留在下单回执。
+Default follow-up after order placement:
+- After `POST /sapi/v2/order` succeeds, call `GET /sapi/v2/order` immediately.
+- Prefer `symbol` and `orderId` from the order receipt for the follow-up query.
+- Return order details to the user by default instead of stopping at the order receipt.
